@@ -9,18 +9,41 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "react": "^18",
-    "react-dom": "^18",
-    "next": "14.2.7"
+    "@langchain/openai": "^0.2.8",
+    "@orca-so/sdk": "^1.2.26",
+    "@project-serum/serum": "^0.13.65",
+    "@solana/spl-token-registry": "^0.2.4574",
+    "@solana/wallet-adapter-base": "^0.9.23",
+    "@solana/wallet-adapter-react": "^0.15.35",
+    "@solana/wallet-adapter-react-ui": "^0.9.35",
+    "@solana/wallet-adapter-wallets": "^0.19.32",
+    "@solana/web3.js": "^1.95.3",
+    "axios": "^1.7.6",
+    "chart.js": "^3.9.1",
+    "chartjs-node-canvas": "^4.1.6",
+    "langchain": "^0.2.17",
+    "lucide-react": "^0.436.0",
+    "next": "^14.2.7",
+    "node-cache": "^5.1.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.12.7"
   },
   "devDependencies": {
-    "typescript": "^5",
+    "@types/bn.js": "^5.1.5",
+    "@types/chart.js": "^2.9.41",
+    "@types/debug": "^4.1.12",
+    "@types/ms": "^0.7.34",
     "@types/node": "^20",
+    "@types/node-fetch": "^2.6.11",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "@types/w3c-web-usb": "^1.0.10",
+    "@types/web": "^0.0.158",
+    "eslint": "^8",
+    "eslint-config-next": "14.2.7",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
-    "eslint": "^8",
-    "eslint-config-next": "14.2.7"
+    "typescript": "^5"
   }
 }

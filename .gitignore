@@ -1,13 +1,23 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
+
 /node_modules
 /.pnp
 .pnp.js
 .yarn/install-state.gz
 
+# Ignore all .env files
+.env*
+
+# Except for .env.local
+!.env.local
+
+
 # testing
 /coverage
+.env
+
 
 # next.js
 /.next/
