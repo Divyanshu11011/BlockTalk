@@ -1,6 +1,7 @@
 # BlockTalk: Your AI-Powered Solana Blockchain Companion
 
 ![image](https://github.com/user-attachments/assets/1f228191-e84c-4703-a466-e6f8b92febd9)
+[BlockTalk](https://blocktalk-gamma.vercel.app/)
 
 
 BlockTalk is an AI-driven chat interface that simplifies interactions with the Solana blockchain. Built with Next.js and powered by advanced language models, BlockTalk makes blockchain operations accessible to everyone, from curious newcomers to seasoned developers.
@@ -160,9 +161,6 @@ npm run dev
 - **Multi-Wallet Support**: Expand beyond Phantom to support a wider range of Solana wallets.
 - **Advanced Analytics**: Implement deeper insights and predictive analytics for user transactions.
 
-## 🤝 Contributing
-
-We welcome contributions to BlockTalk! Please see our [Contributing Guide](CONTRIBUTING.md) for more details.
 
 ## 📄 License
 
@@ -178,4 +176,4 @@ BlockTalk is released under the [MIT License](LICENSE).
 
 Built with ❤️ by Divyanshu
 
-[Visit our website](https://www.blocktalk.io) | 
+[Visit our website](https://blocktalk-gamma.vercel.app/) 
