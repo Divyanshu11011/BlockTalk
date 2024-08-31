@@ -33,7 +33,7 @@ Given the bot's last response, generate 2-3 follow-up questions or actions that 
 
 Bot's last response: "${lastBotMessage}"
 
-Your task is to generate only the follow-up questions or actions. Avoid any suffix, prefix,numbering  or additional text. The follow-up messages should be explicit and specific. For instance:
+Your task is to generate only the follow-up questions or actions. Avoid any suffix, prefix,numbering  or additional text and when generating questions about transactions - generate for solana. The follow-up messages should be explicit and specific. For instance:
 
 If the question is about the price of a cryptocurrency, mention the specific asset (whats the current price of SOLANA).
 If inquiring about wallet balance, specify the network (e.g., "Check my SOL balance on devnet").
