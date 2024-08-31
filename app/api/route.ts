@@ -389,20 +389,21 @@ async function performAction(action: string, walletAddress: string) {
       }
       return "Insufficient parameters for SWAP_TOKENS";
 
-    case "GET_CRYPTO_PRICE":
-      const symbol = getParam("symbol") || "BTC";
-      console.log(`Fetching price for ${symbol}`);
-      try {
-        const priceData = await getCryptoPrice(symbol);
-        return {
-          response: `The current price of ${
-            priceData.symbol
-          } is $${priceData.price.toFixed(2)}`,
-          priceData: priceData,
-        };
-      } catch (error) {
-        return { response: `Error: ${error.message}` };
-      }
+      case "GET_CRYPTO_PRICE":
+  const symbol = getParam("symbol");
+  if (!symbol) {
+    return { response: "Error: No cryptocurrency symbol provided." };
+  }
+  console.log(`Fetching price for ${symbol}`);
+  try {
+    const priceData = await getCryptoPrice(symbol);
+    return {
+      response: `The current price of ${priceData.symbol} is $${priceData.price.toFixed(2)}. 24h change: ${priceData.priceChange24h.toFixed(2)}%`,
+      priceData: priceData,
+    };
+  } catch (error) {
+    return { response: `Error: ${error.message}` };
+  }
 
     default:
       return "I'm sorry, I couldn't understand your request. Could you please rephrase it?";
@@ -1023,102 +1024,91 @@ async function getCryptoPrice(symbol: string) {
     return cachedData;
   }
 
-  const coinGeckoId =
-    symbol.toLowerCase() === "btc" ? "bitcoin" : symbol.toLowerCase();
-
   try {
-    // Fetch current price and 24h change
-    const currentPriceResponse = await axios.get(
-      `https://pro-api.coingecko.com/api/v3/simple/price?ids=${coinGeckoId}&vs_currencies=usd&include_24hr_change=true`,
-      {
-        headers: {
-          'x-cg-pro-api-key': process.env.COINGECKO_API_KEY
-        },
-        timeout: 5000
-      }
+    const response = await axios.get(
+      `https://min-api.cryptocompare.com/data/v2/histohour?fsym=${symbol}&tsym=USD&limit=24`,
+      { timeout: 5000 }
     );
 
-    if (!currentPriceResponse.data[coinGeckoId]) {
-      throw new Error(`No data found for ${symbol}`);
+    if (!response.data || !response.data.Data || !response.data.Data.Data) {
+      throw new Error('Invalid response from CryptoCompare');
     }
 
-    const price = currentPriceResponse.data[coinGeckoId].usd;
-    const priceChange24h =
-      currentPriceResponse.data[coinGeckoId].usd_24h_change;
-
-    // Fetch hourly data for the last 24 hours
-    const historicalDataResponse = await axios.get(
-      `https://pro-api.coingecko.com/api/v3/coins/${coinGeckoId}/market_chart?vs_currency=usd&days=1&interval=hourly`,
-      {
-        headers: {
-          'x-cg-pro-api-key': process.env.COINGECKO_API_KEY
-        },
-        timeout: 5000
-      }
-    );
-
-    let sparklineData = historicalDataResponse.data.prices.map(
-      (priceData: [number, number]) => priceData[1]
-    );
-
-    // Ensure we have 24 data points
-    if (sparklineData.length < 24) {
-      const lastPrice = sparklineData[sparklineData.length - 1] || price;
-      sparklineData = Array(24 - sparklineData.length)
-        .fill(lastPrice)
-        .concat(sparklineData);
-    }
+    const historicalData = response.data.Data.Data;
+    const currentPrice = historicalData[historicalData.length - 1].close;
+    const sparklineData = historicalData.map(dataPoint => dataPoint.close);
+    const priceChange24h = ((currentPrice - sparklineData[0]) / sparklineData[0]) * 100;
 
     const result = {
       symbol: symbol.toUpperCase(),
-      price,
-      priceChange24h,
-      sparklineData,
+      price: currentPrice,
+      priceChange24h: priceChange24h,
+      sparklineData: sparklineData,
       lastUpdated: new Date().toISOString(),
     };
 
+    console.log(`Price fetched from CryptoCompare`);
     priceCache.set(cacheKey, result);
     return result;
   } catch (error) {
-    console.error(`Error fetching from CoinGecko:`, error);
-
-    // Fallback to Binance
-    try {
-      const binanceSymbol = symbol.toUpperCase() + "USDT";
-      const binanceResponse = await axios.get(
-        `https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=1h&limit=24`,
-        { timeout: 5000 }
-      );
-
-      if (binanceResponse.data && binanceResponse.data.length > 0) {
-        const prices = binanceResponse.data.map((candle: any[]) =>
-          parseFloat(candle[4])
-        ); // Close price
-        const latestPrice = prices[prices.length - 1];
-        const price24hAgo = prices[0];
-        const priceChange24h =
-          ((latestPrice - price24hAgo) / price24hAgo) * 100;
-
-        const result = {
-          symbol: symbol.toUpperCase(),
-          price: latestPrice,
-          priceChange24h,
-          sparklineData: prices,
-          lastUpdated: new Date().toISOString(),
-        };
-        priceCache.set(cacheKey, result);
-        return result;
-      }
-    } catch (binanceError) {
-      console.error("Error fetching from Binance:", binanceError);
-    }
-
-    throw new Error(
-      `Unable to fetch price for ${symbol} from any available source`
-    );
+    console.error(`Error fetching from CryptoCompare:`, error);
+    throw new Error(`Unable to fetch price for ${symbol}`);
   }
 }
 
+async function getCryptoPriceFromCryptoCompare(symbol: string) {
+  const [priceResponse, historyResponse] = await Promise.all([
+    axios.get(`https://min-api.cryptocompare.com/data/price?fsym=${symbol}&tsyms=USD`, { timeout: 5000 }),
+    axios.get(`https://min-api.cryptocompare.com/data/v2/histohour?fsym=${symbol}&tsym=USD&limit=24`, { timeout: 5000 })
+  ]);
+
+  if (!priceResponse.data || !priceResponse.data.USD) {
+    throw new Error('Invalid response from CryptoCompare for current price');
+  }
+
+  if (!historyResponse.data || !historyResponse.data.Data || !historyResponse.data.Data.Data) {
+    throw new Error('Invalid response from CryptoCompare for historical data');
+  }
+
+  const currentPrice = priceResponse.data.USD;
+  const sparklineData = historyResponse.data.Data.Data.map(dataPoint => dataPoint.close);
+
+  // Calculate 24h change
+  const priceChange24h = ((currentPrice - sparklineData[0]) / sparklineData[0]) * 100;
+
+  return {
+    symbol: symbol.toUpperCase(),
+    price: currentPrice,
+    priceChange24h: priceChange24h,
+    sparklineData: sparklineData,
+    lastUpdated: new Date().toISOString(),
+  };
+}
+
+
+async function getCryptoPriceFromBinance(symbol: string) {
+  const response = await axios.get(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}USDT`, { timeout: 5000 });
+  if (!response.data || !response.data.price) {
+    throw new Error('Invalid response from Binance');
+  }
+  return {
+    symbol: symbol.toUpperCase(),
+    price: parseFloat(response.data.price),
+    lastUpdated: new Date().toISOString(),
+  };
+}
+
+async function getCryptoPriceFromCoinbase(symbol: string) {
+  const response = await axios.get(`https://api.coinbase.com/v2/prices/${symbol}-USD/spot`, { timeout: 5000 });
+  if (!response.data || !response.data.data || !response.data.data.amount) {
+    throw new Error('Invalid response from Coinbase');
+  }
+  return {
+    symbol: symbol.toUpperCase(),
+    price: parseFloat(response.data.data.amount),
+    lastUpdated: new Date().toISOString(),
+  };
+}
 async function generateHumanReadableResponse(
   result: any,
   network: string,
