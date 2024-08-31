@@ -375,7 +375,7 @@ Important: Ensure your Phantom wallet is connected to the same network (mainnet,
 
       <div className="flex-1 flex flex-col">
       <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
-  {messages.length === 1 ? (
+  {messages.length === 0 ? (
     <>
       <DefaultMessages />
       <div className={`mt-8 max-w-full lg:max-w-[70%] p-3 rounded-lg ${isDarkMode ? "bg-gray-700 text-gray-100" : "bg-white text-gray-800"} break-words`}>
