@@ -211,7 +211,7 @@ Classification: GENERATE_SUMMARY
 walletType: MY_WALLET
 days:30
 
-User request: "What's the current price of BTC?"
+User request: "What's the current price of Bitcoin?"
 Classification: GET_CRYPTO_PRICE
 symbol:BTC
 
@@ -1029,8 +1029,13 @@ async function getCryptoPrice(symbol: string) {
   try {
     // Fetch current price and 24h change
     const currentPriceResponse = await axios.get(
-      `https://api.coingecko.com/api/v3/simple/price?ids=${coinGeckoId}&vs_currencies=usd&include_24hr_change=true`,
-      { timeout: 5000 }
+      `https://pro-api.coingecko.com/api/v3/simple/price?ids=${coinGeckoId}&vs_currencies=usd&include_24hr_change=true`,
+      {
+        headers: {
+          'x-cg-pro-api-key': process.env.COINGECKO_API_KEY
+        },
+        timeout: 5000
+      }
     );
 
     if (!currentPriceResponse.data[coinGeckoId]) {
@@ -1043,8 +1048,13 @@ async function getCryptoPrice(symbol: string) {
 
     // Fetch hourly data for the last 24 hours
     const historicalDataResponse = await axios.get(
-      `https://api.coingecko.com/api/v3/coins/${coinGeckoId}/market_chart?vs_currency=usd&days=1&interval=hourly`,
-      { timeout: 5000 }
+      `https://pro-api.coingecko.com/api/v3/coins/${coinGeckoId}/market_chart?vs_currency=usd&days=1&interval=hourly`,
+      {
+        headers: {
+          'x-cg-pro-api-key': process.env.COINGECKO_API_KEY
+        },
+        timeout: 5000
+      }
     );
 
     let sparklineData = historicalDataResponse.data.prices.map(
