@@ -1,10 +1,9 @@
-'use client'
 
+'use client'
 import React, { useState, useMemo, useEffect, useCallback } from "react"
 import { useWallet, useConnection } from "@solana/wallet-adapter-react"
-import { clusterApiUrl, Connection, PublicKey, VersionedTransaction } from "@solana/web3.js"
+import { clusterApiUrl, Connection, PublicKey, VersionedTransaction , TransactionMessage, MessageV0, SystemProgram, ParsedInstruction } from "@solana/web3.js"
 import { WalletAdapterNetwork } from "@solana/wallet-adapter-base"
-import { SystemProgram } from "@solana/web3.js"
 import { ConnectionProvider } from "@solana/wallet-adapter-react"
 import { PhantomWalletAdapter } from "@solana/wallet-adapter-wallets"
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts"
@@ -19,6 +18,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 import ReactMarkdown from 'react-markdown';
+
 
 require("@solana/wallet-adapter-react-ui/styles.css")
 
@@ -172,6 +172,7 @@ const formatTransaction = (transactionLines: string[]) => {
     </Card>
   );
 };
+
 
 function ChatInterface({ onNetworkChange }: { onNetworkChange: (network: WalletAdapterNetwork) => void }) {
   const [messages, setMessages] = useState<Message[]>([])
@@ -381,20 +382,21 @@ Important: Ensure your Phantom wallet is connected to the same network (mainnet,
           content: "Transaction sent. Processing...",
         }
         setMessages((prev) => [...prev, processingMessage])
-  
-        // Check if the transaction was an airdrop
-        if (transaction.message.instructions.some(instruction => 
-          instruction.programId && 
-          'equals' in instruction.programId &&
-          instruction.programId.equals(SystemProgram.programId) &&
-          'data' in instruction &&
-          instruction.data instanceof Buffer &&
-          instruction.data.length >= 4 &&
-          instruction.data.readUInt32LE(0) === 2 // 2 is the index for SystemInstruction::Transfer
-        )) {
-          setShowAirdropAnimation(true)
-          setTimeout(() => setShowAirdropAnimation(false), 3000) // Hide after 3 seconds
-        }
+        let instructions: ParsedInstruction[] = [];
+
+
+if (instructions.some((instruction: ParsedInstruction) => {
+  if ('programId' in instruction && instruction.programId.equals(SystemProgram.programId)) {
+    const parsed = instruction as ParsedInstruction & { data?: Buffer };
+    if (parsed.data && parsed.data.length >= 4) {
+      return parsed.data.readUInt32LE(0) === 2; // 2 is the index for SystemInstruction::Transfer
+    }
+  }
+  return false;
+})) {
+  setShowAirdropAnimation(true);
+  setTimeout(() => setShowAirdropAnimation(false), 3000); // Hide after 3 seconds
+}
   
         // Wait for confirmation
         const latestBlockHash = await networkConnection.getLatestBlockhash()
