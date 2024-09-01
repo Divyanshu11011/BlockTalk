@@ -22,9 +22,7 @@ import NodeCache from "node-cache";
 import { ChartConfiguration, ChartTypeRegistry } from "chart.js";
 import { TOKEN_PROGRAM_ID } from "@project-serum/serum/lib/token-instructions";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const priceCache = new NodeCache({ stdTTL: 60 });
 
@@ -47,7 +45,7 @@ const KNOWN_TOKENS = {
   },
   devnet: {
     SOL: "So11111111111111111111111111111111111111112",
-    USDC: "Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr",
+    USDC: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
   },
   testnet: {
     SOL: "So11111111111111111111111111111111111111112",
@@ -57,37 +55,40 @@ const KNOWN_TOKENS = {
 
 const memory = new BufferMemory();
 
-const chain = new ConversationChain({
-  llm: model,
-  memory: memory,
-});
+const chain = new ConversationChain({ llm: model, memory: memory });
 
 const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY;
 if (!ALCHEMY_API_KEY) {
   throw new Error("Alchemy API Key not found. Please set it in the .env file.");
 }
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const connection = new Connection(
   `https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
   "confirmed"
 );
+
 const testnetConnection = new Connection(
   "https://api.testnet.solana.com",
   "confirmed"
 );
+
 const devnetConnection = new Connection(
   `https://solana-devnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
   "confirmed"
 );
+
 const solanaMainnetTransactionConnection = new Connection(
   "https://api.mainnet-beta.solana.com",
   "confirmed"
 );
+
 const solanaTestnetTransactionConnection = new Connection(
   "https://api.testnet.solana.com",
   "confirmed"
 );
+
 const solanaDevnetTransactionConnection = new Connection(
   "https://api.devnet.solana.com",
   "confirmed"
@@ -163,13 +164,91 @@ function getCircularReplacer() {
   };
 }
 
+async function getTransactionInfo(txHash: string, network: string) {
+  let connectionToUse;
+  switch (network) {
+    case "testnet":
+      connectionToUse = testnetConnection;
+      break;
+    case "devnet":
+      connectionToUse = devnetConnection;
+      break;
+    default:
+      connectionToUse = connection;
+  }
+
+  try {
+    const tx = await connectionToUse.getParsedTransaction(txHash, {
+      maxSupportedTransactionVersion: 0,
+    });
+
+    if (!tx) {
+      return {
+        error: "Transaction not found",
+        message: `The requested transaction could not be found on the ${network} network. Please verify the transaction hash and try again.`,
+      };
+    }
+
+    const summary = {
+      signature: txHash,
+      blockTime: tx.blockTime
+        ? new Date(tx.blockTime * 1000).toISOString()
+        : "Unknown",
+      slot: tx.slot,
+      fee: `${(tx.meta?.fee || 0) / LAMPORTS_PER_SOL} SOL`,
+      status: tx.meta?.err ? "Failed" : "Success",
+      instructions: tx.transaction.message.instructions.map((inst: any) => {
+        if (inst.program) {
+          return `Program: ${inst.program}`;
+        } else if (inst.parsed) {
+          return `Type: ${inst.parsed.type}`;
+        } else {
+          return "Unknown instruction";
+        }
+      }),
+      accounts: tx.transaction.message.accountKeys.map((account: any) => ({
+        pubkey: account.pubkey.toBase58(),
+        signer: account.signer,
+        writable: account.writable,
+      })),
+    };
+
+    // Add balance changes if available
+    if (tx.meta && tx.meta.postBalances && tx.meta.preBalances) {
+      summary.balanceChanges = tx.transaction.message.accountKeys
+        .map((account: any, index: number) => ({
+          account: account.pubkey.toBase58(),
+          change:
+            (tx.meta.postBalances[index] - tx.meta.preBalances[index]) /
+            LAMPORTS_PER_SOL,
+        }))
+        .filter((change) => change.change !== 0);
+    }
+
+    // Add logs if available
+    if (tx.meta && tx.meta.logMessages) {
+      summary.logs = tx.meta.logMessages;
+    }
+
+    return {
+      network: network,
+      transactionInfo: summary,
+    };
+  } catch (error) {
+    console.error(`Error fetching transaction info on ${network}:`, error);
+    return {
+      error: "Error fetching transaction",
+      message: `An error occurred while fetching the transaction information on ${network}. Please try again later.`,
+      details: error.message,
+    };
+  }
+}
+
 async function processWithGPT(message: string) {
   const prompt = `
-You are a helpful assistant that interprets user requests related to Solana blockchain transactions and cryptocurrency information.
-Interpret the following user request and classify it into one of these actions: GET_BALANCE, GET_TRANSACTIONS, SEND_TRANSACTION, SWAP_TOKENS, GENERATE_SUMMARY, GET_CRYPTO_PRICE,GET_TESTNET_BALANCE,GET_DEVNET_BALANCE,REQUEST_AIRDROP,
-SEND_DEVNET_TRANSACTION,SEND_TESTNET_TRANSACTION or UNKNOWN. Also, extract any relevant parameters. Also there are only 2 type of wallets that can be there - MY_WALLET and SPECIFIED_WALLET
+  You are a helpful assistant that interprets user requests related to Solana blockchain transactions and cryptocurrency information. Interpret the following user request and classify it into one of these actions: GET_BALANCE, GET_TRANSACTIONS, SEND_TRANSACTION, SWAP_TOKENS, GENERATE_SUMMARY, GET_CRYPTO_PRICE, GET_TESTNET_BALANCE, GET_DEVNET_BALANCE, REQUEST_AIRDROP, SEND_DEVNET_TRANSACTION, SEND_TESTNET_TRANSACTION, or UNKNOWN. Also, extract any relevant parameters. Also, there are only 2 types of wallets that can be there - MY_WALLET and SPECIFIED_WALLET.
 
-Some sample examples are included below for your understanding , use them to understand in what format you have to classify the requests , Do note that inputs can vary and you would need to classify as per the best action
+Some sample examples are included below for your understanding. Use them to understand in what format you have to classify the requests. Do note that inputs can vary, and you would need to classify as per the best action.
 
 Examples:
 User request: "tell me about my last 5 transactions"
@@ -187,7 +266,8 @@ network: testnet
 User request: "Airdrop me 0.5 sol on my testnet"
 classification: REQUEST_AIRDROP
 walletType: MY_WALLET
-amount: <amount>network: testnet
+amount:0.5
+network: testnet
 
 User request: "Send 2 SOL to address Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr"
 Classification: SEND_TRANSACTION
@@ -235,12 +315,12 @@ User request: "Show me all token balances in my wallet"
 Classification: GET_ALL_BALANCES
 walletType: MY_WALLET
 
-User request: "What are the details of this transaction: 2npBzWE6j4y3WdKiHs1NwdeoCBPXvJWVxtQ1pMCcXdPPXNyFnBXZgdSHkRX3N9JRdLftNpqRzHBChwj4UWUrCf5p"
+User request: "tell me about the transaction with hash ywCMhvfUSuBngxKxd1Dz3v8uqW7aooxwV1TNdAjmy7mPutXR6ri5ky8BQp1bmu95LdoKdp3yDpph9oojKD6Fhyq on devnet"
 Classification: GET_TRANSACTION_INFO
-txHash: 2npBzWE6j4y3WdKiHs1NwdeoCBPXvJWVxtQ1pMCcXdPPXNyFnBXZgdSHkRX3N9JRdLftNpqRzHBChwj4UWUrCf5p
+txHash: ywCMhvfUSuBngxKxd1Dz3v8uqW7aooxwV1TNdAjmy7mPutXR6ri5ky8BQp1bmu95LdoKdp3yDpph9oojKD6Fhyq
+network: devnet
 
-Now, interpret this user request: "${message}"
-`;
+Now, interpret this user request: "${message}"`;
 
   const response = await chain.call({ input: prompt });
   return response.response;
@@ -292,7 +372,7 @@ async function performAction(action: string, walletAddress: string) {
       if ("error" in balanceResult) {
         return balanceResult.error;
       }
-      return ` balance on ${balanceResult.network} is ${balanceResult.balance} SOL`;
+      return `Balance on ${balanceResult.network} is ${balanceResult.balance} SOL`;
 
     case "GET_TRANSACTIONS":
     case "GENERATE_SUMMARY":
@@ -314,35 +394,40 @@ async function performAction(action: string, walletAddress: string) {
     case "GET_TRANSACTION_INFO":
       const txHash = getParam("txHash");
       if (txHash) {
-        console.log(`Fetching details for transaction: ${txHash}`);
-        const txInfo = await getSummarizedTransactionInfo(txHash);
-        if ("error" in txInfo) {
-          return {
-            error: txInfo.error,
-            message: txInfo.message,
-            actionType: "GET_TRANSACTION_INFO",
-          };
-        }
-        return { transactionInfo: txInfo, actionType: "GET_TRANSACTION_INFO" };
+        console.log(
+          `Fetching details for transaction: ${txHash} on ${network}`
+        );
+        const txInfo = await getTransactionInfo(txHash, network);
+        return {
+          transactionInfo: txInfo,
+          actionType: "GET_TRANSACTION_INFO",
+          network,
+        };
       }
       return "Transaction hash is required for this action.";
 
-      case "REQUEST_AIRDROP":
-        const airdropAmount = parseFloat(getParam("amount") || "1");
-        const airdropNetwork = getParam("network") || "devnet";
-        if (airdropNetwork === "mainnet") {
-          return "Airdrop is not available on mainnet. Please use devnet or testnet for testing purposes.";
-        }
-        if (airdropNetwork !== "devnet" && airdropNetwork !== "testnet") {
-          return "Invalid network specified. Airdrop is only available on devnet or testnet.";
-        }
-        const maxAirdrop = airdropNetwork === "devnet" ? 2 : 1;
-        if (airdropAmount > maxAirdrop) {
-          return `Airdrop request rejected. The maximum allowed airdrop on ${airdropNetwork} is ${maxAirdrop} SOL. Please request ${maxAirdrop} SOL or less.`;
-        }
-        console.log(`Requesting airdrop of ${airdropAmount} SOL to ${addressToUse} on ${airdropNetwork}`);
-        const airdropResult = await requestAirdrop(addressToUse, airdropAmount, airdropNetwork);
-        return airdropResult;
+    case "REQUEST_AIRDROP":
+      const airdropAmount = parseFloat(getParam("amount") || "1");
+      const airdropNetwork = getParam("network") || "devnet";
+      if (airdropNetwork === "mainnet") {
+        return "Airdrop is not available on mainnet. Please use devnet or testnet for testing purposes.";
+      }
+      if (airdropNetwork !== "devnet" && airdropNetwork !== "testnet") {
+        return "Invalid network specified. Airdrop is only available on devnet or testnet.";
+      }
+      const maxAirdrop = airdropNetwork === "devnet" ? 2 : 1;
+      if (airdropAmount > maxAirdrop) {
+        return `Airdrop request rejected. The maximum allowed airdrop on ${airdropNetwork} is ${maxAirdrop} SOL. Please request ${maxAirdrop} SOL or less.`;
+      }
+      console.log(
+        `Requesting airdrop of ${airdropAmount} SOL to ${addressToUse} on ${airdropNetwork}`
+      );
+      const airdropResult = await requestAirdrop(
+        addressToUse,
+        airdropAmount,
+        airdropNetwork
+      );
+      return airdropResult;
 
     case "SEND_TRANSACTION":
     case "SEND_TESTNET_TRANSACTION":
@@ -389,21 +474,25 @@ async function performAction(action: string, walletAddress: string) {
       }
       return "Insufficient parameters for SWAP_TOKENS";
 
-      case "GET_CRYPTO_PRICE":
-  const symbol = getParam("symbol");
-  if (!symbol) {
-    return { response: "Error: No cryptocurrency symbol provided." };
-  }
-  console.log(`Fetching price for ${symbol}`);
-  try {
-    const priceData = await getCryptoPrice(symbol);
-    return {
-      response: `The current price of ${priceData.symbol} is $${priceData.price.toFixed(2)}. 24h change: ${priceData.priceChange24h.toFixed(2)}%`,
-      priceData: priceData,
-    };
-  } catch (error) {
-    return { response: `Error: ${error.message}` };
-  }
+    case "GET_CRYPTO_PRICE":
+      const symbol = getParam("symbol");
+      if (!symbol) {
+        return { response: "Error: No cryptocurrency symbol provided." };
+      }
+      console.log(`Fetching price for ${symbol}`);
+      try {
+        const priceData = await getCryptoPrice(symbol);
+        return {
+          response: `The current price of ${
+            priceData.symbol
+          } is $${priceData.price.toFixed(
+            2
+          )}. 24h change: ${priceData.priceChange24h.toFixed(2)}%`,
+          priceData: priceData,
+        };
+      } catch (error) {
+        return { response: `Error: ${error.message}` };
+      }
 
     default:
       return "I'm sorry, I couldn't understand your request. Could you please rephrase it?";
@@ -416,13 +505,11 @@ async function requestAirdrop(
   network: "devnet" | "testnet"
 ) {
   const publicKey = new PublicKey(address);
-  const connection = network === "devnet" ? devnetConnection : testnetConnection;
+  const connection =
+    network === "devnet" ? devnetConnection : testnetConnection;
 
   // Set maximum airdrop limits
-  const maxAirdrop = {
-    devnet: 2,
-    testnet: 1
-  };
+  const maxAirdrop = { devnet: 2, testnet: 1 };
 
   try {
     // Check if requested amount exceeds the limit
@@ -438,10 +525,10 @@ async function requestAirdrop(
 
     // Confirm transaction with a longer timeout and more robust error handling
     try {
-      await connection.confirmTransaction(signature, 'confirmed');
+      await connection.confirmTransaction(signature, "confirmed");
       return `Successfully airdropped ${amount} SOL to ${address} on ${network}. Transaction signature: ${signature}`;
     } catch (confirmError) {
-      console.error(`Error confirming airdrop transaction:`, confirmError);
+      console.error("Error confirming airdrop transaction:", confirmError);
       return `Airdrop request sent, but confirmation failed. Please check the transaction status manually. Signature: ${signature}`;
     }
   } catch (error) {
@@ -494,9 +581,7 @@ async function getAllTokenBalances(walletAddress: string) {
     const publicKey = new PublicKey(walletAddress);
     const tokenAccounts = await connection.getParsedTokenAccountsByOwner(
       publicKey,
-      {
-        programId: TOKEN_PROGRAM_ID,
-      }
+      { programId: TOKEN_PROGRAM_ID }
     );
 
     const balances = await Promise.all(
@@ -717,62 +802,51 @@ async function swapTokens(
   try {
     const connection = new Connection(NETWORK_URLS[network], "confirmed");
     const wallet = new PublicKey(walletAddress);
+    const swapProgramId = new PublicKey(
+      "SwapsVeCiPHMUAtzQWZw7RjsKjgCjhwU55QGu4U1Szw"
+    );
 
-    const orca = getOrca(connection, network);
+    // You need to find or create a swap pool for the token pair
+    const tokenSwapStateAccount = new PublicKey("YOUR_SWAP_POOL_ADDRESS");
 
     const fromTokenPublicKey = new PublicKey(
-      KNOWN_TOKENS[network][fromToken.toUpperCase()] ||
-        (await getTokenAddress(fromToken, network))
+      KNOWN_TOKENS[network][fromToken.toUpperCase()]
     );
     const toTokenPublicKey = new PublicKey(
-      KNOWN_TOKENS[network][toToken.toUpperCase()] ||
-        (await getTokenAddress(toToken, network))
+      KNOWN_TOKENS[network][toToken.toUpperCase()]
     );
 
-    // Find a pool that supports this trading pair
-    let pool;
-    for (const poolId in OrcaPoolConfig) {
-      const poolConfig = OrcaPoolConfig[poolId];
-      if (
-        (poolConfig.tokenAMint.equals(fromTokenPublicKey) &&
-          poolConfig.tokenBMint.equals(toTokenPublicKey)) ||
-        (poolConfig.tokenBMint.equals(fromTokenPublicKey) &&
-          poolConfig.tokenAMint.equals(toTokenPublicKey))
-      ) {
-        pool = orca.getPool(poolId);
-        break;
-      }
-    }
+    const tokenSwap = await TokenSwap.loadTokenSwap(
+      connection,
+      tokenSwapStateAccount,
+      swapProgramId,
+      wallet
+    );
 
-    if (!pool) {
-      throw new Error(
-        `No pool found for ${fromToken}/${toToken} pair on ${network}`
-      );
-    }
-
-    const fromTokenAmount = new Decimal(amount);
-    const quote = await pool.getQuote(fromTokenPublicKey, fromTokenAmount);
-    const toTokenAmount = quote.getMinOutputAmount();
-
-    const swapPayload = await pool.swap(
+    const swapInstruction = TokenSwap.swapInstruction(
+      tokenSwap.tokenSwap,
+      tokenSwap.authority,
       wallet,
       fromTokenPublicKey,
-      fromTokenAmount,
-      toTokenAmount
+      tokenSwap.tokenAccountA,
+      tokenSwap.tokenAccountB,
+      toTokenPublicKey,
+      tokenSwap.poolToken,
+      tokenSwap.feeAccount,
+      null,
+      tokenSwap.swapProgramId,
+      TOKEN_PROGRAM_ID,
+      amount * Math.pow(10, 9), // Assuming 9 decimals, adjust if needed
+      0 // Minimum amount to receive, set to 0 for simplicity
     );
 
-    const transaction = new Transaction().add(swapPayload.transaction);
-    const serializedTransaction = transaction
-      .serialize({ requireAllSignatures: false })
-      .toString("base64");
+    const transaction = new Transaction().add(swapInstruction);
 
     return {
-      transaction: serializedTransaction,
-      inputToken: fromToken,
-      outputToken: toToken,
-      amount: amount,
-      expectedOutputAmount: toTokenAmount.toNumber(),
-      message: `Swap transaction created to exchange ${amount} ${fromToken} for approximately ${toTokenAmount.toNumber()} ${toToken} on ${network}. This transaction needs to be signed by the user.`,
+      transaction: transaction
+        .serialize({ requireAllSignatures: false })
+        .toString("base64"),
+      message: `Swap transaction created to exchange ${amount} ${fromToken} for ${toToken} on ${network}. This transaction needs to be signed by the user.`,
       network: network,
       connection: connection.rpcEndpoint,
     };
@@ -781,6 +855,7 @@ async function swapTokens(
     return { error: `Failed to create swap transaction: ${error.message}` };
   }
 }
+
 let tokenList: TokenInfo[] | null = null;
 
 const tokenCache = new NodeCache({ stdTTL: 3600 });
@@ -898,8 +973,7 @@ function generateSummaryFromTransactions(
 
   const recentTransactions = transactions.slice(0, 5);
 
-  const report = `
-Summary for the last ${days} days on ${network}:
+  const report = `Summary for the last ${days} days on ${network}:
 
 Total Transactions: ${summary.totalTransactions}
 Sent: ${summary.sent}
@@ -913,18 +987,18 @@ Largest Transaction: ${Math.abs(summary.largestTransaction.amount).toFixed(
   ).toLocaleString()}
 Most Frequent Transaction Type: ${summary.mostFrequentTransactionType}
 
-Recent Transactions:
-${recentTransactions
-  .map(
-    (tx) =>
-      `- ${tx.type}: ${tx.amount} on ${new Date(tx.blockTime).toLocaleString()}`
-  )
-  .join("\n")}
+Recent Transactions: ${recentTransactions
+    .map(
+      (tx) =>
+        `- ${tx.type}: ${tx.amount} on ${new Date(
+          tx.blockTime
+        ).toLocaleString()}`
+    )
+    .join("\n")}
 
 This summary is based on the ${
     transactions.length
-  } transactions fetched for the specified time period.
-`;
+  } transactions fetched for the specified time period.`;
 
   return report;
 }
@@ -972,7 +1046,7 @@ async function generateChart(
 async function getTransactionHistory(address, days = 30) {
   try {
     const response = await axios.get(
-      `https://api.solscan.io/account/transaction`,
+      "https://api.solscan.io/account/transaction",
       {
         params: {
           address: address,
@@ -1031,13 +1105,14 @@ async function getCryptoPrice(symbol: string) {
     );
 
     if (!response.data || !response.data.Data || !response.data.Data.Data) {
-      throw new Error('Invalid response from CryptoCompare');
+      throw new Error("Invalid response from CryptoCompare");
     }
 
     const historicalData = response.data.Data.Data;
     const currentPrice = historicalData[historicalData.length - 1].close;
-    const sparklineData = historicalData.map(dataPoint => dataPoint.close);
-    const priceChange24h = ((currentPrice - sparklineData[0]) / sparklineData[0]) * 100;
+    const sparklineData = historicalData.map((dataPoint) => dataPoint.close);
+    const priceChange24h =
+      ((currentPrice - sparklineData[0]) / sparklineData[0]) * 100;
 
     const result = {
       symbol: symbol.toUpperCase(),
@@ -1058,23 +1133,36 @@ async function getCryptoPrice(symbol: string) {
 
 async function getCryptoPriceFromCryptoCompare(symbol: string) {
   const [priceResponse, historyResponse] = await Promise.all([
-    axios.get(`https://min-api.cryptocompare.com/data/price?fsym=${symbol}&tsyms=USD`, { timeout: 5000 }),
-    axios.get(`https://min-api.cryptocompare.com/data/v2/histohour?fsym=${symbol}&tsym=USD&limit=24`, { timeout: 5000 })
+    axios.get(
+      `https://min-api.cryptocompare.com/data/price?fsym=${symbol}&tsyms=USD`,
+      { timeout: 5000 }
+    ),
+    axios.get(
+      `https://min-api.cryptocompare.com/data/v2/histohour?fsym=${symbol}&tsym=USD&limit=24`,
+      { timeout: 5000 }
+    ),
   ]);
 
   if (!priceResponse.data || !priceResponse.data.USD) {
-    throw new Error('Invalid response from CryptoCompare for current price');
+    throw new Error("Invalid response from CryptoCompare for current price");
   }
 
-  if (!historyResponse.data || !historyResponse.data.Data || !historyResponse.data.Data.Data) {
-    throw new Error('Invalid response from CryptoCompare for historical data');
+  if (
+    !historyResponse.data ||
+    !historyResponse.data.Data ||
+    !historyResponse.data.Data.Data
+  ) {
+    throw new Error("Invalid response from CryptoCompare for historical data");
   }
 
   const currentPrice = priceResponse.data.USD;
-  const sparklineData = historyResponse.data.Data.Data.map(dataPoint => dataPoint.close);
+  const sparklineData = historyResponse.data.Data.Data.map(
+    (dataPoint) => dataPoint.close
+  );
 
   // Calculate 24h change
-  const priceChange24h = ((currentPrice - sparklineData[0]) / sparklineData[0]) * 100;
+  const priceChange24h =
+    ((currentPrice - sparklineData[0]) / sparklineData[0]) * 100;
 
   return {
     symbol: symbol.toUpperCase(),
@@ -1085,11 +1173,13 @@ async function getCryptoPriceFromCryptoCompare(symbol: string) {
   };
 }
 
-
 async function getCryptoPriceFromBinance(symbol: string) {
-  const response = await axios.get(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}USDT`, { timeout: 5000 });
+  const response = await axios.get(
+    `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}USDT`,
+    { timeout: 5000 }
+  );
   if (!response.data || !response.data.price) {
-    throw new Error('Invalid response from Binance');
+    throw new Error("Invalid response from Binance");
   }
   return {
     symbol: symbol.toUpperCase(),
@@ -1099,9 +1189,12 @@ async function getCryptoPriceFromBinance(symbol: string) {
 }
 
 async function getCryptoPriceFromCoinbase(symbol: string) {
-  const response = await axios.get(`https://api.coinbase.com/v2/prices/${symbol}-USD/spot`, { timeout: 5000 });
+  const response = await axios.get(
+    `https://api.coinbase.com/v2/prices/${symbol}-USD/spot`,
+    { timeout: 5000 }
+  );
   if (!response.data || !response.data.data || !response.data.data.amount) {
-    throw new Error('Invalid response from Coinbase');
+    throw new Error("Invalid response from Coinbase");
   }
   return {
     symbol: symbol.toUpperCase(),
@@ -1109,6 +1202,7 @@ async function getCryptoPriceFromCoinbase(symbol: string) {
     lastUpdated: new Date().toISOString(),
   };
 }
+
 async function generateHumanReadableResponse(
   result: any,
   network: string,
@@ -1125,17 +1219,27 @@ async function generateHumanReadableResponse(
   } else if (action === "GET_TRANSACTION_INFO") {
     if (result.error) {
       resultString = `Error: ${result.message}`;
-    } else if (result.transactionInfo) {
-      const txInfo = result.transactionInfo;
-      resultString = `
-Transaction Details:
+    } else if (
+      result.transactionInfo &&
+      result.transactionInfo.transactionInfo
+    ) {
+      const txInfo = result.transactionInfo.transactionInfo;
+      resultString = `Transaction Details on ${network}: 
 Signature: ${txInfo.signature}
 Block Time: ${txInfo.blockTime}
 Slot: ${txInfo.slot}
 Fee: ${txInfo.fee}
 Status: ${txInfo.status}
-Instructions: ${txInfo.instructions.join(", ")}
-      `;
+Instructions: ${
+        Array.isArray(txInfo.instructions)
+          ? txInfo.instructions.join(", ")
+          : JSON.stringify(txInfo.instructions)
+      }
+Accounts Involved: ${txInfo.accounts.map((acc: any) => acc.pubkey).join(", ")}
+Balance Changes: ${txInfo.balanceChanges
+        .map((change: any) => `${change.account}: ${change.change} SOL`)
+        .join(", ")}
+${txInfo.logs ? `Logs: ${txInfo.logs.join("\n")}` : ""}`;
     } else {
       resultString = "Unable to process transaction information.";
     }
@@ -1147,19 +1251,17 @@ Instructions: ${txInfo.instructions.join(", ")}
     // This is a transaction list
     fullTransactionList = result
       .map(
-        (tx, index) => `
-Transaction ${index + 1}:
-  Signature: ${tx.signature}
-  Time: ${tx.blockTime}
-  Status: ${tx.status}
-  Fee: ${tx.fee}
-  Amount: ${tx.amount}
-  Type: ${tx.type}
-`
+        (tx, index) => `Transaction ${index + 1}:
+Signature: ${tx.signature}
+Time: ${tx.blockTime}
+Status: ${tx.status}
+Fee: ${tx.fee}
+Amount: ${tx.amount}
+Type: ${tx.type}`
       )
       .join("\n");
 
-    resultString = `Summary of ${result.length} transactions on the network.`;
+    resultString = `Summary of ${result.length} transactions on the ${network} network.`;
   } else if (typeof result === "string") {
     resultString = result;
   } else {
@@ -1170,10 +1272,7 @@ Transaction ${index + 1}:
 
 ${resultString}
 
-Provide a clear and concise explanation of the information or action described in the data. 
-Keep your tone helpful and professional. Include all the data you received without missing anything.
-You don't have to mention that you are explicitly showing the data in "human readable format"
-Conclude with an invitation for the user to ask for further assistance if needed.`;
+Provide a clear and concise explanation of the information or action described in the data. Keep your tone helpful and professional. Include all the data you received without missing anything. You don't have to mention that you are explicitly showing the data in "human readable format". Conclude with an invitation for the user to ask for further assistance if needed.`;
 
   const response = await chain.call({ input: prompt });
   console.log("\n Action type is", action);
