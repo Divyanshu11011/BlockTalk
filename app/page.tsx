@@ -504,25 +504,7 @@ const confirmSwapTransaction = async (signature: string, connection: Connection)
         console.log('Quote Data from API:', data.quoteData);
         setShowSwapConfirmation(true);
       }
-
-      if (data.response && data.response.includes('Swap Quote Details')) {
-        const quoteMatch = data.response.match(
-          /Swap Quote Details:([\s\S]*?)(?=\n\nThis quote is valid)/
-        );
-        if (quoteMatch) {
-          const quoteString = quoteMatch[1].trim();
-          const quoteLines = quoteString.split('\n');
-          const parsedQuoteData: PriceData = {} as PriceData;
-          quoteLines.forEach((line: string) => {
-            const [key, value] = line.split(':').map((s: string) => s.trim());
-            (parsedQuoteData as any)[key] = value;
-          });
-          setQuoteData(parsedQuoteData);
-          setShowSwapConfirmation(true);
-          console.log('Parsed Quote Data:', parsedQuoteData);
-        }
-      }
-
+    
       const botMessage: Message = {
         sender: 'bot',
         content: data.response,
