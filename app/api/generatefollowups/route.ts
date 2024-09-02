@@ -38,6 +38,7 @@ Your task is to generate only the follow-up questions or actions. Avoid any suff
 If the question is about the price of a cryptocurrency, mention the specific asset (whats the current price of SOLANA).
 If inquiring about wallet balance, specify the network (e.g., "Check my SOL balance on devnet").
 If inquiring about sending transaction , specify wallet like - send 0.2 sol to C1Q85yjUtPQookfxbAFzJo9whF7nnN5RqduDFviZ9FVZ on devnet
+If inquiring for swaps then only suggest swap 0.4 sol to usdc (no other asset other than usdc should be used).
 Suggested follow-up questions or actions:
 `;
 

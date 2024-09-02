@@ -23,7 +23,10 @@ import { ChartConfiguration, ChartTypeRegistry } from "chart.js";
 import { TOKEN_PROGRAM_ID } from "@project-serum/serum/lib/token-instructions";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
+const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY;
+if (!ALCHEMY_API_KEY) {
+  throw new Error("Alchemy API Key not found. Please set it in the .env file.");
+}
 const priceCache = new NodeCache({ stdTTL: 60 });
 
 const model = new ChatOpenAI({
@@ -33,7 +36,7 @@ const model = new ChatOpenAI({
 });
 
 const NETWORK_URLS = {
-  mainnet: "https://api.mainnet-beta.solana.com",
+  mainnet: "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
   devnet: "https://api.devnet.solana.com",
   testnet: "https://api.testnet.solana.com",
 };
@@ -57,10 +60,7 @@ const memory = new BufferMemory();
 
 const chain = new ConversationChain({ llm: model, memory: memory });
 
-const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY;
-if (!ALCHEMY_API_KEY) {
-  throw new Error("Alchemy API Key not found. Please set it in the .env file.");
-}
+
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -80,7 +80,7 @@ const devnetConnection = new Connection(
 );
 
 const solanaMainnetTransactionConnection = new Connection(
-  "https://api.mainnet-beta.solana.com",
+  `https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}`,
   "confirmed"
 );
 
@@ -110,6 +110,11 @@ export async function POST(request: Request) {
     );
 
     let finalResponse;
+    let showSwapConfirmation = false;
+    if (result.actionType === "SWAP_TOKENS") {
+      showSwapConfirmation = result.showSwapConfirmation || false;
+      console.log("Swap confirmation state:", showSwapConfirmation);
+    }
     if (
       result.actionType === "GET_TRANSACTIONS" ||
       result.actionType === "GENERATE_SUMMARY"
@@ -132,15 +137,17 @@ export async function POST(request: Request) {
     return NextResponse.json({
       response: finalResponse,
       priceData: result.priceData,
+      quoteData: result.quoteData,
       transactionDetails: result.transaction
         ? {
             transaction: result.transaction
               .serialize({ requireAllSignatures: false })
               .toString("base64"),
-            network: result.network,
-            connection: result.connection?.rpcEndpoint,
+              network: result.network,
+              connection: result.connection?.rpcEndpoint,
           }
         : null,
+        showSwapConfirmation: showSwapConfirmation,
     });
   } catch (error) {
     console.error("Error:", error);
@@ -450,31 +457,32 @@ async function performAction(action: string, walletAddress: string) {
         return result;
       }
       return `Insufficient parameters for ${actionType}`;
-
-    case "SWAP_TOKENS":
-      const fromToken = getParam("fromToken");
-      const toToken = getParam("toToken");
-      const swapAmount = parseFloat(getParam("amount") || "0");
-      if (fromToken && toToken && swapAmount) {
-        console.log(
-          `Swapping ${swapAmount} ${fromToken} for ${toToken} from ${addressToUse} on ${network}`
-        );
-        const result = await swapTokens(
-          addressToUse,
-          fromToken,
-          toToken,
-          swapAmount,
-          network
-        );
-        if (result.error) {
-          return result.error;
-        } else {
-          return result.message;
+      case "SWAP_TOKENS":
+        const fromToken = getParam("fromToken");
+        const toToken = getParam("toToken");
+        const swapAmount = parseFloat(getParam("amount") || "0");
+        if (fromToken && toToken && swapAmount) {
+          console.log(
+            `Fetching swap quote for ${swapAmount} ${fromToken} to ${toToken} from ${addressToUse} on ${network}`
+          );
+          const result = await swapTokens(
+            addressToUse,
+            fromToken,
+            toToken,
+            swapAmount,
+            network
+          );
+          return {
+            ...result,
+            showSwapConfirmation: !!result.quoteData && !result.error,
+          };
         }
-      }
-      return "Insufficient parameters for SWAP_TOKENS";
-
-    case "GET_CRYPTO_PRICE":
+        return {
+          error: "Insufficient parameters for SWAP_TOKENS",
+          actionType: "SWAP_TOKENS",
+          showSwapConfirmation: false,
+        };      
+  case "GET_CRYPTO_PRICE":
       const symbol = getParam("symbol");
       if (!symbol) {
         return { response: "Error: No cryptocurrency symbol provided." };
@@ -523,14 +531,9 @@ async function requestAirdrop(
     // Request airdrop
     const signature = await connection.requestAirdrop(publicKey, lamports);
 
-    // Confirm transaction with a longer timeout and more robust error handling
-    try {
-      await connection.confirmTransaction(signature, "confirmed");
-      return `Successfully airdropped ${amount} SOL to ${address} on ${network}. Transaction signature: ${signature}`;
-    } catch (confirmError) {
-      console.error("Error confirming airdrop transaction:", confirmError);
-      return `Airdrop request sent, but confirmation failed. Please check the transaction status manually. Signature: ${signature}`;
-    }
+    // Return immediately after initiating the airdrop
+    return `Airdrop initiated for ${amount} SOL to ${address} on ${network}. You should receive it in a wink! Transaction signature: ${signature}`;
+
   } catch (error) {
     console.error(`Error requesting airdrop on ${network}:`, error);
     return `Failed to request airdrop on ${network}. Error: ${error.message}`;
@@ -694,27 +697,38 @@ async function getLastTransactions(
 
     return transactions
       .filter((tx): tx is ParsedTransactionWithMeta => tx !== null)
-      .map((tx) => ({
-        signature: tx.transaction.signatures[0],
-        blockTime: tx.blockTime
-          ? new Date(tx.blockTime * 1000).toISOString()
-          : "Unknown",
-        slot: tx.slot,
-        fee:
-          tx.meta?.fee !== undefined
+      .map((tx) => {
+        const instruction = tx.transaction.message.instructions[0];
+        let sender = '';
+        let receiver = '';
+
+        if (instruction && 'parsed' in instruction && instruction.parsed.type === 'transfer') {
+          sender = instruction.parsed.info.source;
+          receiver = instruction.parsed.info.destination;
+        } else {
+          sender = tx.transaction.message.accountKeys[0].pubkey.toString();
+          receiver = tx.transaction.message.accountKeys[1].pubkey.toString();
+        }
+
+        return {
+          signature: tx.transaction.signatures[0],
+          blockTime: tx.blockTime
+            ? new Date(tx.blockTime * 1000).toISOString()
+            : "Unknown",
+          slot: tx.slot,
+          fee: tx.meta?.fee !== undefined
             ? `${(tx.meta.fee / LAMPORTS_PER_SOL).toFixed(6)} SOL`
             : "Unknown",
-        status: tx.meta?.err ? "Failed" : "Success",
-        amount:
-          tx.meta?.postBalances[0] !== undefined &&
-          tx.meta?.preBalances[0] !== undefined
-            ? `${(
-                (tx.meta.preBalances[0] - tx.meta.postBalances[0]) /
-                LAMPORTS_PER_SOL
-              ).toFixed(6)} SOL`
+          status: tx.meta?.err ? "Failed" : "Success",
+          amount: tx.meta?.postBalances[0] !== undefined &&
+            tx.meta?.preBalances[0] !== undefined
+            ? `${((tx.meta.preBalances[0] - tx.meta.postBalances[0]) / LAMPORTS_PER_SOL).toFixed(6)} SOL`
             : "Unknown",
-        type: tx.transaction.message.instructions[0]?.program || "Unknown",
-      }));
+          type: tx.transaction.message.instructions[0]?.program || "Unknown",
+          sender: sender,
+          receiver: receiver,
+        };
+      });
   } catch (error) {
     console.error(
       `Error fetching transactions for ${address} on ${network}:`,
@@ -800,59 +814,50 @@ async function swapTokens(
   network: "mainnet" | "testnet" | "devnet"
 ) {
   try {
-    const connection = new Connection(NETWORK_URLS[network], "confirmed");
-    const wallet = new PublicKey(walletAddress);
-    const swapProgramId = new PublicKey(
-      "SwapsVeCiPHMUAtzQWZw7RjsKjgCjhwU55QGu4U1Szw"
-    );
+    if (network !== "mainnet") {
+      return { error: "Jupiter API only supports mainnet swaps.", actionType: "SWAP_TOKENS", showSwapConfirmation: false };
+    }
 
-    // You need to find or create a swap pool for the token pair
-    const tokenSwapStateAccount = new PublicKey("YOUR_SWAP_POOL_ADDRESS");
+    const fromTokenAddress = await getTokenAddress(fromToken, network);
+    const toTokenAddress = await getTokenAddress(toToken, network);
 
-    const fromTokenPublicKey = new PublicKey(
-      KNOWN_TOKENS[network][fromToken.toUpperCase()]
-    );
-    const toTokenPublicKey = new PublicKey(
-      KNOWN_TOKENS[network][toToken.toUpperCase()]
-    );
+    const jupiterQuoteUrl = "https://quote-api.jup.ag/v6/quote";
+    const quoteParams = new URLSearchParams({
+      inputMint: fromTokenAddress,
+      outputMint: toTokenAddress,
+      amount: (amount * 1e9).toString(), // Convert to lamports
+      slippageBps: "50", // 0.5% slippage
+    });
 
-    const tokenSwap = await TokenSwap.loadTokenSwap(
-      connection,
-      tokenSwapStateAccount,
-      swapProgramId,
-      wallet
-    );
-
-    const swapInstruction = TokenSwap.swapInstruction(
-      tokenSwap.tokenSwap,
-      tokenSwap.authority,
-      wallet,
-      fromTokenPublicKey,
-      tokenSwap.tokenAccountA,
-      tokenSwap.tokenAccountB,
-      toTokenPublicKey,
-      tokenSwap.poolToken,
-      tokenSwap.feeAccount,
-      null,
-      tokenSwap.swapProgramId,
-      TOKEN_PROGRAM_ID,
-      amount * Math.pow(10, 9), // Assuming 9 decimals, adjust if needed
-      0 // Minimum amount to receive, set to 0 for simplicity
-    );
-
-    const transaction = new Transaction().add(swapInstruction);
+    const response = await axios.get(`${jupiterQuoteUrl}?${quoteParams}`);
+    const quoteData = response.data;
 
     return {
-      transaction: transaction
-        .serialize({ requireAllSignatures: false })
-        .toString("base64"),
-      message: `Swap transaction created to exchange ${amount} ${fromToken} for ${toToken} on ${network}. This transaction needs to be signed by the user.`,
+      quoteData: quoteData,
+      fromToken,
+      toToken,
+      amount,
+      message: `Swap quote fetched for ${amount} ${fromToken} to ${toToken} on mainnet.`,
       network: network,
-      connection: connection.rpcEndpoint,
+      actionType: "SWAP_TOKENS",
+      showSwapConfirmation: true,
     };
   } catch (error) {
     console.error("Error in swapTokens:", error);
-    return { error: `Failed to create swap transaction: ${error.message}` };
+    let errorMessage = `Failed to fetch swap quote: ${error.message}`;
+
+    if (axios.isAxiosError(error) && error.response) {
+      if (error.response.status === 400 && error.response.data.error.includes("is not tradable")) {
+        errorMessage = `Sorry, this swap is not possible on Solana mainnet, Please Swap with tokens that are swappable (Ex- USDC, WBTC) ${error.response.data.error}`;
+      }
+    }
+
+    return { 
+      error: errorMessage, 
+      actionType: "SWAP_TOKENS", 
+      showSwapConfirmation: false,
+      network: network,
+    };
   }
 }
 
@@ -894,7 +899,7 @@ async function getTokenAddress(
 ): Promise<string> {
   console.log(`Fetching address for token ${symbol} on ${network}`);
   const tokenList = await getTokenList(network);
-  console.log(`Token list for ${network}:`, Array.from(tokenList.entries()));
+  // console.log(`Token list for ${network}:`, Array.from(tokenList.entries()));
   const address = tokenList.get(symbol.toUpperCase());
 
   if (!address) {
@@ -1212,11 +1217,62 @@ async function generateHumanReadableResponse(
   let fullTransactionList = "";
   let finalResponse = "";
 
-  if (action === "GET_ALL_BALANCES") {
+  
+  if (action === "GET_TRANSACTIONS" || action === "GENERATE_SUMMARY") {
+    if (typeof result === "string") {
+      // This means no transactions were found
+      resultString = result;
+      fullTransactionList = "No transactions found.";
+    } else if (Array.isArray(result) && result.length > 0) {
+      fullTransactionList = result
+        .map(
+          (tx, index) => `Transaction ${index + 1}:
+Signature: ${tx.signature}
+Time: ${tx.blockTime}
+Status: ${tx.status}
+Fee: ${tx.fee}
+Amount: ${tx.amount}
+Type: ${tx.type}
+Sender: ${tx.sender}
+Receiver: ${tx.receiver}`
+        )
+        .join("\n\n");
+
+      resultString = `Summary of ${result.length} transactions on the ${network} network.`;
+    } else {
+      resultString = "No transaction data available.";
+      fullTransactionList = "No transactions found.";
+    }
+  }
+
+  else if (action === "GET_ALL_BALANCES") {
     result.balances.forEach((balance: any) => {
       resultString += `${balance.token}: ${balance.uiAmount}\n`;
     });
-  } else if (action === "GET_TRANSACTION_INFO") {
+  }
+  if (action === "SWAP_TOKENS") {
+    if (result.quoteData) {
+      const quote = result.quoteData;
+      resultString = `Swap Quote Details:
+From: ${result.fromToken} (${quote.inputMint})
+To: ${result.toToken} (${quote.outputMint})
+Input Amount: ${result.amount} ${result.fromToken}
+Expected Output: ${quote.outAmount / 1e6} ${result.toToken}
+Price: 1 ${result.fromToken} = ${(quote.outAmount / (result.amount * 1e9) * 1e6).toFixed(6)} ${result.toToken}
+Price Impact: ${(quote.priceImpactPct * 100).toFixed(2)}%
+Minimum Output Amount: ${quote.otherAmountThreshold / 1e6} ${result.toToken}
+
+Route: ${quote.routePlan.map((step: any) => step.swapInfo.label).join(" -> ")}
+
+This quote is valid for a limited time. Would you like to proceed with the swap?`;
+    } else if (result.error) {
+      resultString = `Error fetching swap quote: ${result.error}`;
+    } else {
+      resultString = "Unable to fetch swap quote. Please try again later.";
+    }
+  }
+  
+  else if (action === "GET_TRANSACTION_INFO") {
     if (result.error) {
       resultString = `Error: ${result.message}`;
     } else if (
@@ -1268,7 +1324,7 @@ Type: ${tx.type}`
     resultString = JSON.stringify(result, getCircularReplacer(), 2);
   }
 
-  const prompt = `You are a helpful assistant that explains Solana blockchain transactions and cryptocurrency information in simple terms. Convert the following data into a human-readable format, keeping in mind that this information is from the ${network} network:
+  const prompt = `You are a helpful assistant that explains Solana blockchain transactions and cryptocurrency information in simple terms. Convert the following data into a human-readable format, keeping in mind that this information is from the ${network} network , if "unknown" network is mentioned then dont include that in your response:
 
 ${resultString}
 
