@@ -4,6 +4,7 @@ import { ChatOpenAI } from "@langchain/openai";
 import { BufferMemory } from "langchain/memory";
 import { ConversationChain } from "langchain/chains";
 import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import {
   Connection,
   PublicKey,
@@ -23,17 +24,20 @@ import { ChartConfiguration, ChartTypeRegistry } from "chart.js";
 import { TOKEN_PROGRAM_ID } from "@project-serum/serum/lib/token-instructions";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const ALCHEMY_API_KEY = process.env.ALCHEMY_API_KEY;
+const genAI = new GoogleGenerativeAI(process.env.NEXT_GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: "gemini-1.0-pro" });
+const ALCHEMY_API_KEY = process.env.NEXT_PUBLIC_ALCHEMY_API_KEY;
 if (!ALCHEMY_API_KEY) {
   throw new Error("Alchemy API Key not found. Please set it in the .env file.");
 }
 const priceCache = new NodeCache({ stdTTL: 60 });
 
-const model = new ChatOpenAI({
-  modelName: "gpt-3.5-turbo",
-  temperature: 0.5,
-  openAIApiKey: process.env.OPENAI_API_KEY,
-});
+// const model = new ChatOpenAI({
+//   modelName: "gpt-3.5-turbo",
+//   temperature: 0.5,
+//   openAIApiKey: process.env.OPENAI_API_KEY,
+// });
+// const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
 const NETWORK_URLS = {
   mainnet: "https://solana-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}",
@@ -329,8 +333,9 @@ network: devnet
 
 Now, interpret this user request: "${message}"`;
 
-  const response = await chain.call({ input: prompt });
-  return response.response;
+const result = await model.generateContent(prompt);
+const response = await result.response;
+return response.text();
 }
 
 async function performAction(action: string, walletAddress: string) {
@@ -701,13 +706,22 @@ async function getLastTransactions(
         const instruction = tx.transaction.message.instructions[0];
         let sender = '';
         let receiver = '';
+        let amount = '';
 
         if (instruction && 'parsed' in instruction && instruction.parsed.type === 'transfer') {
           sender = instruction.parsed.info.source;
           receiver = instruction.parsed.info.destination;
+          amount = `${instruction.parsed.info.lamports / LAMPORTS_PER_SOL} SOL`;
         } else {
           sender = tx.transaction.message.accountKeys[0].pubkey.toString();
           receiver = tx.transaction.message.accountKeys[1].pubkey.toString();
+          // Attempt to calculate amount from balance changes
+          if (tx.meta && tx.meta.preBalances && tx.meta.postBalances) {
+            const senderIndex = tx.transaction.message.accountKeys.findIndex(key => key.pubkey.toString() === sender);
+            if (senderIndex !== -1) {
+              amount = `${(tx.meta.preBalances[senderIndex] - tx.meta.postBalances[senderIndex]) / LAMPORTS_PER_SOL} SOL`;
+            }
+          }
         }
 
         return {
@@ -720,13 +734,13 @@ async function getLastTransactions(
             ? `${(tx.meta.fee / LAMPORTS_PER_SOL).toFixed(6)} SOL`
             : "Unknown",
           status: tx.meta?.err ? "Failed" : "Success",
-          amount: tx.meta?.postBalances[0] !== undefined &&
-            tx.meta?.preBalances[0] !== undefined
-            ? `${((tx.meta.preBalances[0] - tx.meta.postBalances[0]) / LAMPORTS_PER_SOL).toFixed(6)} SOL`
-            : "Unknown",
+          amount: amount,
           type: tx.transaction.message.instructions[0]?.program || "Unknown",
           sender: sender,
           receiver: receiver,
+          gasFee: tx.meta?.fee !== undefined
+            ? `${(tx.meta.fee / LAMPORTS_PER_SOL).toFixed(6)} SOL`
+            : "Unknown",
         };
       });
   } catch (error) {
@@ -1306,16 +1320,19 @@ ${txInfo.logs ? `Logs: ${txInfo.logs.join("\n")}` : ""}`;
   ) {
     // This is a transaction list
     fullTransactionList = result
-      .map(
-        (tx, index) => `Transaction ${index + 1}:
-Signature: ${tx.signature}
-Time: ${tx.blockTime}
-Status: ${tx.status}
-Fee: ${tx.fee}
-Amount: ${tx.amount}
-Type: ${tx.type}`
-      )
-      .join("\n");
+    .map(
+      (tx, index) => `Transaction ${index + 1}:
+  Signature: ${tx.signature}
+  Time: ${tx.blockTime}
+  Status: ${tx.status}
+  Fee: ${tx.fee}
+  Amount: ${tx.amount}
+  Type: ${tx.type}
+  Sender: ${tx.sender}
+  Receiver: ${tx.receiver}
+  Gas Fee: ${tx.gasFee}`
+    )
+    .join("\n");
 
     resultString = `Summary of ${result.length} transactions on the ${network} network.`;
   } else if (typeof result === "string") {
@@ -1324,21 +1341,33 @@ Type: ${tx.type}`
     resultString = JSON.stringify(result, getCircularReplacer(), 2);
   }
 
-  const prompt = `You are a helpful assistant that explains Solana blockchain transactions and cryptocurrency information in simple terms. Convert the following data into a human-readable format, keeping in mind that this information is from the ${network} network , if "unknown" network is mentioned then dont include that in your response:
+  const prompt = `You are an assistant tasked with explaining Solana blockchain data. You will be given a result string containing factual information. Your job is to say this information clearly and concisely.
 
-${resultString}
-
-Provide a clear and concise explanation of the information or action described in the data. Keep your tone helpful and professional. Include all the data you received without missing anything. You don't have to mention that you are explicitly showing the data in "human readable format". Conclude with an invitation for the user to ask for further assistance if needed.`;
-
-  const response = await chain.call({ input: prompt });
+  Your only task is to explain only This result string :
+  ${resultString}
+  
+  Instructions:
+  1. Only use information explicitly stated in the result string above.
+  2. Do not add any information, data, or details that are not in the result string.
+  3. Never generate or include false or made-up data.
+  4. If the result string is empty or doesn't contain certain information, do not invent or assume any details.
+  5. Explain the given information in simple, easy-to-understand terms.
+  6. If you don't have enough information to explain something, simply state that the information is not provided.
+  7. Do not speculate or make assumptions beyond what is explicitly stated.
+  8. Keep your response focused solely on explaining the data in the result string.
+  9. For prompt related to transactions avoid telling something like "However, no further details, such as the transaction types, sender/receiver addresses" , as it is handled.
+  
+  Your response should be a clear, factual explanation of only the information provided in the result string.`;
+ result = await model.generateContent(prompt);
+const response = await result.response;
   console.log("\n Action type is", action);
   console.log(fullTransactionList);
 
   // For GET_TRANSACTIONS and GENERATE_SUMMARY, append the full transaction list
   if (action === "GET_TRANSACTIONS" || action === "GENERATE_SUMMARY") {
-    finalResponse = `${response.response}\n\nHere is the full list of transactions:\n${fullTransactionList}`;
+    finalResponse = `${response.text()}\n\nHere is the full list of transactions:\n${fullTransactionList}`;
   } else {
-    finalResponse = response.response;
+    finalResponse = response.text();
   }
 
   return finalResponse;
