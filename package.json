@@ -9,6 +9,8 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@google-ai/generativelanguage": "^2.6.0",
+    "@google/generative-ai": "^0.20.0",
     "@langchain/openai": "^0.2.8",
     "@orca-so/sdk": "^1.2.26",
     "@project-serum/serum": "^0.13.65",
